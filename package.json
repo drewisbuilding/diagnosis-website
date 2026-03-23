@@ -8,9 +8,15 @@
     "start": "next start"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.79.0",
+    "@sparticuz/chromium": "^143.0.4",
+    "@supabase/supabase-js": "^2.99.2",
+    "cheerio": "^1.2.0",
     "next": "16.1.7",
+    "puppeteer-core": "^24.40.0",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -18,6 +24,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
