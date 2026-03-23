@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { checkRateLimit } from "@/lib/rate-limit";
+// import { checkRateLimit } from "@/lib/rate-limit"; // temporarily disabled
 import { assertSafeUrl } from "@/lib/security/ssrf-guard";
 import {
   createSubmission,
@@ -26,19 +26,19 @@ const RequestSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  // ── Rate limiting ──
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    req.headers.get("x-real-ip") ??
-    "unknown";
+  // ── Rate limiting (TEMPORARILY DISABLED FOR DEBUGGING) ──
+  // const ip =
+  //   req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+  //   req.headers.get("x-real-ip") ??
+  //   "unknown";
 
-  const { allowed } = checkRateLimit(ip, 5, 60 * 60 * 1000); // 5 per hour per IP
-  if (!allowed) {
-    return NextResponse.json(
-      { error: "Too many requests. Please wait before submitting again." },
-      { status: 429 }
-    );
-  }
+  // const { allowed } = checkRateLimit(ip, 5, 60 * 60 * 1000); // 5 per hour per IP
+  // if (!allowed) {
+  //   return NextResponse.json(
+  //     { error: "Too many requests. Please wait before submitting again." },
+  //     { status: 429 }
+  //   );
+  // }
 
   // ── Parse and validate request ──
   let body: unknown;
@@ -81,15 +81,11 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Respond immediately — run pipeline in background ──
-  // We respond with submission_id so the client can start polling.
-  // The actual pipeline runs after responding.
-
   const response = NextResponse.json(
     { submission_id: submission.id },
     { status: 202 }
   );
 
-  // Fire-and-forget pipeline
   runPipeline(submission.id, submission.url, data).catch((err) => {
     console.error(`Pipeline failed for submission ${submission.id}:`, err);
   });
@@ -103,22 +99,19 @@ async function runPipeline(
   data: z.infer<typeof RequestSchema>
 ) {
   try {
-    // ── Step 1: Fetch page ──
     await updateSubmissionStatus(submissionId, "scraping");
     const fetched = await fetchPage(url);
 
-    // ── Step 2: Extract, normalize, and capture screenshot in parallel ──
     const [rawData, screenshotBase64] = await Promise.all([
       Promise.resolve(extractPageData(fetched.html)),
       captureScreenshot(fetched.finalUrl),
     ]);
+
     const normalized = normalizePageData(submissionId, rawData);
     const snapshot = await savePageSnapshot(normalized);
 
-    // ── Step 3: Run diagnosis pipeline ──
     await updateSubmissionStatus(submissionId, "diagnosing");
 
-    // Build full submission object for pipeline context
     const fullSubmission = {
       id: submissionId,
       url,
@@ -135,9 +128,9 @@ async function runPipeline(
       completed_at: null,
     };
 
-    const { report, analysisJson } = await runDiagnosisPipeline(snapshot, fullSubmission, screenshotBase64);
+    const { report, analysisJson } =
+      await runDiagnosisPipeline(snapshot, fullSubmission, screenshotBase64);
 
-    // ── Step 4: Save report and analysis ──
     await saveReport(report);
 
     const analysisId = await saveAnalysis({
