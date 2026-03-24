@@ -14,6 +14,11 @@ export function checkRateLimit(
   maxRequests: number,
   windowMs: number
 ): { allowed: boolean; remaining: number; resetAt: number } {
+  // Temporarily disabled for debugging — always allow
+  if (process.env.NODE_ENV !== "production") {
+    return { allowed: true, remaining: maxRequests, resetAt: Date.now() + windowMs };
+  }
+
   const now = Date.now();
   const key = ip;
   const record = store.get(key);

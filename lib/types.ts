@@ -173,6 +173,7 @@ export interface Report {
 export type PipelineStage =
   | "scrape"
   | "classify"
+  | "extract_visible_elements"
   | "score"
   | "identify_issues"
   | "generate_rewrites"

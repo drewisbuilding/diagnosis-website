@@ -3,7 +3,7 @@ import { ISSUE_ARCHETYPES } from "@/lib/knowledge/issue-archetypes";
 import { REWRITE_PRINCIPLES, FORBIDDEN_PHRASES } from "@/lib/knowledge/rewrite-principles";
 import { OUTPUT_RULES } from "@/lib/knowledge/output-rules";
 import type { PageSnapshot, Submission } from "@/lib/types";
-import type { RawIssueSchema } from "./schemas";
+import type { RawIssueSchema, VisibleElementsOutput } from "./schemas";
 import { z } from "zod";
 import { serializeSnapshotForPrompt } from "@/lib/parsing/normalizer";
 
@@ -108,6 +108,74 @@ When evidence is mixed or only partially visible, use:
 
 Never use: "missing", "absent", "not there", "no [element]" — unless absence is confirmed in both sources.`;
 
+// ─── Conversion Pressure Rules ───────────────────────────────────────────────
+
+const CONVERSION_PRESSURE_RULES = `
+CONVERSION PRESSURE RULES:
+
+- Every issue must reflect what is happening to a real visitor in real time.
+  Do not describe problems abstractly — describe behavior.
+
+- Translate problems into actions:
+  Not "this is unclear" → but "the visitor scans, fails to understand, and does not move forward."
+
+- Show consequence:
+  Make clear what happens because of the issue (hesitation, ignored CTA, delayed decision, drop-off risk).
+
+- Avoid soft language:
+  Do NOT use "could", "might", "may", "potentially".
+
+- Do NOT make the problem feel small or easily fixable:
+  The goal is clarity + weight, not reassurance.
+
+- The Primary Blocker must feel like:
+  "This alone is enough to stop conversion."
+
+- The diagnosis should create forward pressure:
+  The reader should feel that something is actively breaking, not just suboptimal.
+`;
+
+// ─── Stage 0: Visible Element Extraction ─────────────────────────────────────
+
+export function buildVisibleElementsPrompt(
+  snapshot: PageSnapshot
+): { system: string; user: string } {
+  const system = `You are a precise webpage element detector. Your only task is to identify whether specific UI elements are present on the page.
+
+Return only valid JSON — no explanatory text, no markdown code fences.
+
+ELEMENT DETECTION RULES:
+- Set a field to true only if there is clear evidence the element exists in the extracted content or screenshot
+- Set to false if the element is absent or you cannot confirm it
+- App Store / Google Play badges: true if any download badge, store link, or "Download on the App Store" / "Get it on Google Play" text is present
+- primary_cta: true if any button, link, or form exists that asks the visitor to take a primary action (sign up, try, download, get started, buy, etc.)
+- signup_link: true if there is any sign-up, register, create account, or free trial link anywhere on the page
+- pricing_link: true if pricing, plans, or cost information is visible or linked from this page
+- navigation_cta: true if the navigation bar contains a CTA button or link (e.g. "Get Started", "Sign Up", "Try Free" in the nav)
+
+PRODUCT VISIBILITY RULES:
+- product_ui_visible: true if any product screenshot, app UI, dashboard mockup, interface illustration, or rendered product visual is present anywhere on the page — even partially or decoratively. Set to false only if the page is entirely text/logo/icon with no product representation whatsoever.
+- product_action_clear: true if a visitor can tell what specific action they would take inside the product (e.g. "schedule a meeting", "send a message", "view analytics"). False if the product is shown but what you DO in it is not explained.
+- product_outcome_clear: true if the page clearly states the outcome or result the visitor gets from using the product (e.g. "ship faster", "reduce churn", "save 3 hours/week"). False if the benefit is generic, implied, or absent.
+
+Return JSON:
+{
+  "app_store_badge": boolean,
+  "google_play_badge": boolean,
+  "primary_cta": boolean,
+  "signup_link": boolean,
+  "pricing_link": boolean,
+  "navigation_cta": boolean,
+  "product_ui_visible": boolean,
+  "product_action_clear": boolean,
+  "product_outcome_clear": boolean
+}`;
+
+  const user = serializeSnapshotForPrompt(snapshot);
+
+  return { system, user };
+}
+
 // ─── Stage 1: Page Classification ────────────────────────────────────────────
 
 export function buildClassificationPrompt(
@@ -179,7 +247,8 @@ export function buildIssueIdentificationPrompt(
   dominantCategory: string,
   primaryAudience: string,
   inferredGoal: string,
-  strongestStrategicAngle: string
+  strongestStrategicAngle: string,
+  visibleElements?: VisibleElementsOutput | null
 ): { system: string; user: string } {
   // Build archetype reference for injection into prompt
   const archetypeRef = Object.entries(ISSUE_ARCHETYPES)
@@ -192,6 +261,7 @@ export function buildIssueIdentificationPrompt(
 
   const system = `${SYSTEM_IDENTITY}
 ${VISUAL_RECONCILIATION_RULES}
+${CONVERSION_PRESSURE_RULES}
 
 FIRST-SCREEN VALIDATION (run internally before writing any issue):
 Before identifying issues, answer these questions about the above-the-fold view:
@@ -318,7 +388,11 @@ WRITING RULES:
 - Short to medium sentences — no filler, no repetition
 - Do not over-explain the reasoning
 
-Return JSON matching this schema:
+Return JSON matching this schema.
+
+Every field is REQUIRED.
+Do not omit any field.
+If unsure, still return a best-effort value — never return undefined.
 {
   "issues": [
     {
@@ -329,7 +403,7 @@ Return JSON matching this schema:
       "prose": "2-4 sentences in plain language that integrate the observation, root cause, and impact into a single diagnostic paragraph — no labels, no bullet points. Write it as the diagnosis itself, not a description of the diagnosis. Open with what the visitor experiences, not with a verdict. Example: 'The headline announces a feature name (Smart Scheduling) with no explanation of what problem it solves or who it is for. Pages like this are typically written by someone who already knows the product well — but the visitor arrives knowing nothing. Without a clear value statement above the fold, most visitors scan briefly and leave without understanding what they would get.'",
       "observation": "what specifically was found on this page (1-2 sentences)",
       "root_cause": "the underlying pattern behind this symptom (1 sentence)",
-      "why_it_matters": "impact on visitor behavior (1 sentence)",
+      "why_it_matters": "REQUIRED — "impact on visitor behavior (exactly 1 sentence, must always be present)",
       "recommended_change": "One directive, directional instruction — product-minded, action-first, no qualifiers. Describe what needs to change and why it matters, not the finished output. This is a diagnosis, not the fix plan. AVOID: 'Visitors will…', 'This may help users…', 'Consider…', 'You could…', 'Here is the new headline:…'. PREFER: 'Make the page answer…', 'Lead with the outcome before the feature list.', 'Move this off the homepage…', 'Surface pricing before asking for commitment…', 'The page needs to sequence trust before action.'. Example: 'Make the page answer one question immediately: which path is for me? Right now that work is on the visitor.' Do NOT write polished finished copy — tell them the direction, not the finished version.",
       "evidence": "direct quote from the page that triggered this issue, or null"
     }
@@ -350,7 +424,34 @@ Return JSON matching this schema:
     .filter(Boolean)
     .join("\n");
 
-  const user = `PAGE CONTEXT (established in pre-analysis — frame all critique relative to this):
+  const visibleElementsBlock = visibleElements
+    ? `VISIBLE PAGE ELEMENTS (confirmed present/absent via automated detection — treat as ground truth):
+app_store_badge: ${visibleElements.app_store_badge}
+google_play_badge: ${visibleElements.google_play_badge}
+primary_cta: ${visibleElements.primary_cta}
+signup_link: ${visibleElements.signup_link}
+pricing_link: ${visibleElements.pricing_link}
+navigation_cta: ${visibleElements.navigation_cta}
+
+STRICT RULE: You are not allowed to claim an element is missing if it is marked as true above.
+If an element is present but weak, you must describe it as "present but not effective" or "present but easy to miss" — not "absent".
+
+PRODUCT VISIBILITY:
+product_ui_visible: ${visibleElements.product_ui_visible}
+product_action_clear: ${visibleElements.product_action_clear}
+product_outcome_clear: ${visibleElements.product_outcome_clear}
+
+STRICT RULE — PRODUCT VISIBILITY:
+If product_ui_visible is true, you are NOT allowed to say "the product is not shown", "no product visual", "the page never shows the product", or any equivalent absence claim.
+Instead, you must choose one of:
+- "shown but not explained" — the UI is visible but the page does not describe what it is
+- "shown but not interpreted" — the UI is present but its meaning or relevance is not communicated
+- "shown but requires inference" — the visitor must work to understand what they are seeing
+
+`
+    : "";
+
+  const user = `${visibleElementsBlock}PAGE CONTEXT (established in pre-analysis — frame all critique relative to this):
 Apparent audience: ${primaryAudience}
 Inferred goal: ${inferredGoal}
 Strongest strategic angle: ${strongestStrategicAngle}
@@ -504,6 +605,7 @@ export function buildSynthesisPrompt(
 ): { system: string; user: string } {
   const system = `${SYSTEM_IDENTITY}
 ${VISUAL_RECONCILIATION_RULES}
+${CONVERSION_PRESSURE_RULES}
 
 ${EVIDENCE_SAFETY_RULES}
 

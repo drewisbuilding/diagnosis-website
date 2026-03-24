@@ -13,7 +13,7 @@ import {
 import { fetchPage } from "@/lib/parsing/fetcher";
 import { extractPageData } from "@/lib/parsing/extractor";
 import { normalizePageData } from "@/lib/parsing/normalizer";
-import { captureScreenshot } from "@/lib/parsing/screenshotter";
+// import { captureScreenshot } from "@/lib/parsing/screenshotter"; // temporarily disabled
 import { runDiagnosisPipeline } from "@/lib/ai/pipeline";
 
 const RequestSchema = z.object({
@@ -39,6 +39,8 @@ export async function POST(req: NextRequest) {
   //     { status: 429 }
   //   );
   // }
+
+  console.log("Diagnose request received");
 
   // ── Parse and validate request ──
   let body: unknown;
@@ -99,13 +101,31 @@ async function runPipeline(
   data: z.infer<typeof RequestSchema>
 ) {
   try {
+    console.log(`STEP 1: starting fetch [${submissionId}]`);
     await updateSubmissionStatus(submissionId, "scraping");
-    const fetched = await fetchPage(url);
 
-    const [rawData, screenshotBase64] = await Promise.all([
-      Promise.resolve(extractPageData(fetched.html)),
-      captureScreenshot(fetched.finalUrl),
-    ]);
+    let fetched: Awaited<ReturnType<typeof fetchPage>>;
+    try {
+      fetched = await fetchPage(url);
+      console.log(`STEP 2: fetched HTML [${submissionId}] finalUrl=${fetched.finalUrl}`);
+    } catch (err) {
+      console.error(`PIPELINE ERROR at STEP 2 (fetchPage) [${submissionId}]:`, err instanceof Error ? err.message : err);
+      throw err;
+    }
+
+    console.log(`STEP 3: starting analysis (extract + normalize) [${submissionId}]`);
+    let rawData: ReturnType<typeof extractPageData>;
+    let screenshotBase64: string | null;
+    try {
+      [rawData, screenshotBase64] = await Promise.all([
+        Promise.resolve(extractPageData(fetched.html)),
+        Promise.resolve(null), // captureScreenshot temporarily disabled
+      ]);
+      console.log(`STEP 3: done — wordCount=${rawData.wordCount}, screenshot=${screenshotBase64 ? "yes" : "null"} [${submissionId}]`);
+    } catch (err) {
+      console.error(`PIPELINE ERROR at STEP 3 (extractPageData) [${submissionId}]:`, err instanceof Error ? err.message : err);
+      throw err;
+    }
 
     const normalized = normalizePageData(submissionId, rawData);
     const snapshot = await savePageSnapshot(normalized);
@@ -128,9 +148,18 @@ async function runPipeline(
       completed_at: null,
     };
 
-    const { report, analysisJson } =
-      await runDiagnosisPipeline(snapshot, fullSubmission, screenshotBase64);
+    console.log(`STEP 4: starting AI [${submissionId}]`);
+    let report: Awaited<ReturnType<typeof runDiagnosisPipeline>>["report"];
+    let analysisJson: Awaited<ReturnType<typeof runDiagnosisPipeline>>["analysisJson"];
+    try {
+      ({ report, analysisJson } = await runDiagnosisPipeline(snapshot, fullSubmission, screenshotBase64));
+      console.log(`STEP 5: AI response received [${submissionId}] tier=${report.tier} score=${report.overall_score}`);
+    } catch (err) {
+      console.error(`PIPELINE ERROR at STEP 4–5 (runDiagnosisPipeline) [${submissionId}]:`, err instanceof Error ? err.message : err);
+      throw err;
+    }
 
+    console.log(`STEP 6: saving result [${submissionId}]`);
     await saveReport(report);
 
     const analysisId = await saveAnalysis({
@@ -142,14 +171,19 @@ async function runPipeline(
     });
 
     await setSubmissionAnalysisId(submissionId, analysisId);
+    console.log(`STEP 6: done — analysisId=${analysisId} [${submissionId}]`);
 
+    console.log(`STEP 7: marking job complete [${submissionId}]`);
     await updateSubmissionStatus(submissionId, "complete", {
       page_type: report.sections[0]?.dimension ?? undefined,
       completed: true,
     });
+    console.log(`REPORT STATUS: COMPLETE [${submissionId}]`);
+
+    console.log(`STEP 8: DONE [${submissionId}]`);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    console.error(`Pipeline error for ${submissionId}:`, message);
+    console.error(`PIPELINE ERROR [${submissionId}]:`, message);
     await updateSubmissionStatus(submissionId, "failed", {
       error: message,
     }).catch(() => {});

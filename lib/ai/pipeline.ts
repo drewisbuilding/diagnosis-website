@@ -16,6 +16,8 @@ import {
   ScoringOutputSchema,
   RewriteOutputSchema,
   SynthesisOutputSchema,
+  VisibleElementsOutputSchema,
+  type VisibleElementsOutput,
 } from "./schemas";
 import {
   buildClassificationPrompt,
@@ -23,6 +25,7 @@ import {
   buildScoringPrompt,
   buildRewritePrompt,
   buildSynthesisPrompt,
+  buildVisibleElementsPrompt,
 } from "./prompts";
 import {
   RUBRIC_DIMENSIONS,
@@ -169,6 +172,7 @@ export async function runDiagnosisPipeline(
   const stages: PipelineMeta["stages"] = [];
 
   // ── Stage 1: Classify page type ──────────────────────────────────────────
+  console.log(`STEP 4a: AI stage 1 — classify [${submission.id}]`);
 
   const classifyPrompts = buildClassificationPrompt(snapshot, submission);
   const classifyResult = await runStage(
@@ -191,7 +195,36 @@ export async function runDiagnosisPipeline(
   const inferredGoal = classifyResult.output.inferred_goal;
   const strongestStrategicAngle = classifyResult.output.strongest_strategic_angle;
 
+  console.log(`STEP 4a: done — pageType=${pageType} dominant=${dominantCategory} [${submission.id}]`);
+
+  // ── Stage 1b: Extract visible elements ───────────────────────────────────
+  console.log(`STEP 4a2: AI stage 1b — extract_visible_elements [${submission.id}]`);
+
+  let visibleElements: VisibleElementsOutput | null = null;
+  try {
+    const visiblePrompts = buildVisibleElementsPrompt(snapshot);
+    const visibleResult = await runStage(
+      client,
+      visiblePrompts.system,
+      visiblePrompts.user,
+      VisibleElementsOutputSchema,
+      "extract_visible_elements",
+      screenshotBase64
+    );
+    stages.push({
+      stage: "extract_visible_elements",
+      duration_ms: visibleResult.duration_ms,
+      tokens_used: visibleResult.tokens_used,
+    });
+    visibleElements = visibleResult.output;
+    console.log(`STEP 4a2: done — visibleElements=${JSON.stringify(visibleElements)} [${submission.id}]`);
+  } catch (err) {
+    // Non-fatal: log and continue without visible elements
+    console.warn(`STEP 4a2: extract_visible_elements failed, continuing without it:`, err);
+  }
+
   // ── Stage 2: Identify issues ──────────────────────────────────────────────
+  console.log(`STEP 4b: AI stage 2 — identify_issues [${submission.id}]`);
 
   const issuePrompts = buildIssueIdentificationPrompt(
     snapshot,
@@ -200,7 +233,8 @@ export async function runDiagnosisPipeline(
     dominantCategory,
     primaryAudience,
     inferredGoal,
-    strongestStrategicAngle
+    strongestStrategicAngle,
+    visibleElements
   );
   const issueResult = await runStage(
     client,
@@ -219,8 +253,37 @@ export async function runDiagnosisPipeline(
   const rawIssues = issueResult.output.issues;
   const whatsWorking = issueResult.output.whats_working;
 
+  // ── Contradiction check ───────────────────────────────────────────────────
+  if (visibleElements) {
+    const absencePatterns: Array<[keyof VisibleElementsOutput, RegExp]> = [
+      ["primary_cta",       /\b(no|missing|absent|lacks?)\b.{0,40}\bCTA\b|\bno call.to.action\b|\bthere is no button\b/i],
+      ["signup_link",       /\b(no|missing|absent|lacks?)\b.{0,40}\b(sign.?up|register|create account)\b/i],
+      ["pricing_link",      /\b(no|missing|absent|lacks?)\b.{0,40}\bpricing\b/i],
+      ["app_store_badge",   /\b(no|missing|absent|lacks?)\b.{0,40}\bApp Store\b/i],
+      ["google_play_badge", /\b(no|missing|absent|lacks?)\b.{0,40}\bGoogle Play\b/i],
+      ["navigation_cta",    /\b(no|missing|absent|lacks?)\b.{0,40}\bnav(igation)?.{0,20}CTA\b/i],
+      ["product_ui_visible",/\bthe product is not shown\b|\bno product (visual|screenshot|UI|image)\b|\bpage never shows the product\b|\bdoes not show the product\b/i],
+    ];
+
+    for (const issue of rawIssues) {
+      const text = `${issue.title} ${issue.prose} ${issue.observation} ${issue.recommended_change}`;
+      for (const [key, pattern] of absencePatterns) {
+        if (visibleElements[key] && pattern.test(text)) {
+          throw new Error(
+            `[reality-check] Stage "identify_issues" contradicts visible_elements: ` +
+            `issue "${issue.archetype_id}" claims "${key}" is absent but it was detected as present. ` +
+            `Offending text: "${text.slice(0, 200)}"`
+          );
+        }
+      }
+    }
+  }
+
+  console.log(`STEP 4b: done — issues=${rawIssues.length} [${submission.id}]`);
+
   // ── Stages 3 + 4: Score and rewrite in parallel ───────────────────────────
   // Neither depends on the other — both only need rawIssues from stage 2.
+  console.log(`STEP 4c: AI stages 3+4 — score + generate_rewrites (parallel) [${submission.id}]`);
 
   const scorePrompts = buildScoringPrompt(rawIssues, snapshot);
   const rewritePrompts = buildRewritePrompt(rawIssues, snapshot);
@@ -248,7 +311,10 @@ export async function runDiagnosisPipeline(
     rewriteMap[rw.archetype_id] = rw.rewrite;
   }
 
+  console.log(`STEP 4c: done — score=${overallScore} tier=${tier} [${submission.id}]`);
+
   // ── Stage 5: Synthesize summary ───────────────────────────────────────────
+  console.log(`STEP 4d: AI stage 5 — synthesize [${submission.id}]`);
 
   const synthPrompts = buildSynthesisPrompt(
     rawIssues,
@@ -275,6 +341,8 @@ export async function runDiagnosisPipeline(
     duration_ms: synthResult.duration_ms,
     tokens_used: synthResult.tokens_used,
   });
+
+  console.log(`STEP 4d: done — summary written [${submission.id}]`);
 
   // ── Assemble final issues with rewrites ───────────────────────────────────
 

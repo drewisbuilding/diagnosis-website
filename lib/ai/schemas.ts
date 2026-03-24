@@ -1,5 +1,21 @@
 import { z } from "zod";
 
+// ─── Stage 0: Visible Element Extraction ─────────────────────────────────────
+
+export const VisibleElementsOutputSchema = z.object({
+  app_store_badge: z.boolean(),
+  google_play_badge: z.boolean(),
+  primary_cta: z.boolean(),
+  signup_link: z.boolean(),
+  pricing_link: z.boolean(),
+  navigation_cta: z.boolean(),
+  product_ui_visible: z.boolean(),
+  product_action_clear: z.boolean(),
+  product_outcome_clear: z.boolean(),
+});
+
+export type VisibleElementsOutput = z.infer<typeof VisibleElementsOutputSchema>;
+
 // ─── Stage 1: Classification ──────────────────────────────────────────────────
 
 // Fixed dominant category list — the anchor for the entire diagnosis
